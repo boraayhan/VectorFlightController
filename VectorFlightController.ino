@@ -13,33 +13,39 @@ int state = 0;
 bool ask, sensorError, sdError = false;
 
 //Data
-float xR, yR, zR, xA, yA, zA, in_temp, out_temp, launch_time, out_humid, altitude, pressure, baseline = 0;
+double xR, yR, zR, xA, yA, zA, in_temp, out_temp, launch_time, out_humid, altitude, pressure, baseline = 0;
 
 void setup() {
-  Serial.begin(9600);
-  pinMode(12, OUTPUT);
+  Serial.begin(115200);
+  pinMode(7, OUTPUT);
   delay(1000);
   if (!mpu.begin()) {
     sensorError = true;
-    Serial.println("MPU Error!");
+    Serial.println(F("MPU Error!"));
   }
   mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);
   if (!bmp.begin()) {
     sensorError = true;
-    Serial.println("MPU Error!");
+    Serial.println(F("MPU Error!"));
   }
   baseline = getPressure();
-  if (!SD.begin(4)) {
-    sdError = true;
+  if (!SD.begin(6)) {
+    Serial.println(F("SD Card initialization failed!"));
   }
-  file = SD.open("data_main.csv");
+  file = SD.open(F("data.csv"));
   file.close();
-  if (!SD.exists("data_main.csv"))
-    sdError = true;
-  file = SD.open("data_main.csv", FILE_WRITE);
-  file.println(F("Time (s), State, Omega X (rad/s), Omega Y (rad/s), Omega Z (rad/s), Acceleration X (m/s^2), Acceleration Y (m/s^2), Acceleration Z (m/s^2), Internal Temperature (C), External Temperature (C), Humidity (%), Altitude AGL (m), External Pressure (hPA)"));
+  delay(400);
+  file = SD.open(F("data.csv"), FILE_WRITE);
+  if (file) {
+    Serial.println(F("SD Card file functional!"));
+    file.println(F("Time (s), State, Omega X (rad/s), Omega Y (rad/s), Omega Z (rad/s), Acceleration X (m/s^2), Acceleration Y (m/s^2), Acceleration Z (m/s^2), Internal Temperature (C), External Temperature (C), Humidity (%), Altitude AGL (m), External Pressure (hPA)"));
+    Serial.println(F("Entered headers to data file!"));
+  } else {
+    sensorError = true;
+    Serial.println(F("Error opening data file!"));
+  }
   file.close();
 }
 
@@ -48,7 +54,7 @@ void loop() {
   StateMachine();
   WriteData();
 }
-void GetMotion() {
+void GetMotion() {  //Done
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
@@ -66,9 +72,8 @@ void GetMotion() {
   delay(100);
 }
 
-void GetSensors()  //Lower priority than GetMotion
-{
-  int readData = DHT.read11(8);
+void GetSensors() {  //Lower priority than GetMotion - Done
+  DHT.read11(8);
   out_temp = DHT.temperature;
   out_humid = DHT.humidity;
   delay(200);
@@ -78,12 +83,14 @@ void StateMachine() {
   GetMotion();
   switch (state) {
     case (0):  // Ground, safe
+      digitalWrite(7, LOW);
       break;
-    case (1):                    // Ground, armed
+    case (1):  // Ground, armed
+      digitalWrite(7, HIGH);
       baseline = getPressure();  //Set "0m" to starting altitude
       //Center fin servos
       if ((abs(xA) > 15 || abs(yA) > 15 || abs(zA) > 15) || altitude > 10) {  //Optimize this
-        WriteString("State 2 (Launch)");
+        WriteString(F("State 2 (Launch)"));
         launch_time = millis();
         state = 2;
       }
@@ -93,35 +100,37 @@ void StateMachine() {
 
       if (millis() > launch_time + 1600) {
         state = 3;
-        //Serial.println("State 3");
+        WriteString(F("State 3"));
       }
       break;
     case (3):  // Ballistic Ascent
       //Crazy on fins
       if (descending()) {
         state = 4;
-        WriteString("State 4");
+        WriteString(F("State 4"));
       }
       break;
     case (4):  // Ballistic Descent
       if (altitude < 70) {
         //Deploy parachute
         state = 5;
-        WriteString("State 5");
+        WriteString(F("State 5"));
       }
       break;
     case (5):  // Parachute
       if (xR + yR + zR < 0.5) {
-        WriteString("State 6");
+        WriteString(F("State 6"));
         state = 6;
       }
       break;
-    case (6):   //Stopped, landed
+    case (6):  //Stopped, landed
+      Blink();
+      break;
     case (-1):  // Abort
       break;
   }
 }
-long getPressure() {  //hectopascals (hPa)
+double getPressure() {  //hectopascals (hPa), needs float adjustment
   char status;
   double T, P, p0, a;
   status = bmp.startTemperature();
@@ -140,29 +149,35 @@ long getPressure() {  //hectopascals (hPa)
     }
   }
 }
-void UpdatePressure() {
+void UpdatePressure() {  //needs float adjustment
   pressure = getPressure();
   altitude = bmp.altitude(pressure, baseline);
 }
 
 void WriteData() {
+  String error = "";
   GetMotion();
   GetSensors();
-  float vars[] = { millis() / 1000, state, xR, yR, zR, xA, yA, zA, in_temp, out_temp, out_humid, altitude, pressure };
-  file = SD.open("data_main.csv");
-  for (float entry : vars) {
+  double vars[] = { millis() / 1000.00, state, xR, yR, zR, xA, yA, zA, in_temp, out_temp, out_humid, altitude, pressure };
+  file = SD.open(F("data.csv"), FILE_WRITE);
+  for (double entry : vars) {
+    Serial.print(entry, 6);
+    Serial.print(", ");
     if (file) {
-      file.print(entry);
+      file.print(entry, 6);
       file.print(F(","));
+    } else {
+      error = F("Error writing file!");
     }
   }
   file.println();
+  Serial.println(error);
   file.close();
 }
 
 bool descending() {
   GetMotion();
-  float pAlt = altitude;
+  double pAlt = altitude;
   delay(500);
   GetMotion();
   return (pAlt > altitude);
@@ -184,10 +199,11 @@ int GetSerial() {
 void InterpretSerial(int s) {
   switch (s) {
     case (65827710):
-    //dont forget to actually arm lmfao
-      WriteString("Armed!");
+      state = 1;
+      //dont forget to actually arm lmfao
+      WriteString(F("Armed!"));
       break;
-    case (698282798210):
+    case (677269677510):
       Serial.println(F("Inertial and Environmental Sensor Status:"));
       if (sensorError)
         Serial.println(F("FAULTY"));
@@ -198,24 +214,34 @@ void InterpretSerial(int s) {
         Serial.println(F("FAULTY"));
       else
         Serial.println(F("FUNCTIONAL"));
+      break;
+    case (8773806910):
+      SD.remove(F("data.csv"));
+      file = SD.open(F("data.csv"), FILE_WRITE);
+      file.close();
+      file = SD.open(F("data.csv"), FILE_WRITE);
+      file.println(F("Time (s), State, Omega X (rad/s), Omega Y (rad/s), Omega Z (rad/s), Acceleration X (m/s^2), Acceleration Y (m/s^2), Acceleration Z (m/s^2), Internal Temperature (C), External Temperature (C), Humidity (%), Altitude AGL (m), External Pressure (hPA)"));
+      file.close();
+      break;
   }
 }
 
-void WriteString(String s)
-{
+void WriteString(String s) {
   Serial.println(s);
-  file = SD.open("data_main.csv", FILE_WRITE);
-  file.print("[NON-NUMERIC DATA],");
-  file.print(millis()/1000);
-  file.print(",");
+  file = SD.open(F("data.csv"), FILE_WRITE);
+  file.print(millis() / 1000.00, 6);
+  file.print(F(","));
   file.println(s);
+  file.print(F(","));
+  file.print(altitude);
+  file.print(F(","));
+  file.print(F("SYS_MSG"));
   file.close();
 }
 
-void TestSD()
-{
-  file = SD.open("data_main.csv");
-  file.write("SD Write Functional!");
-  SD
-  )
+void Blink() {
+  digitalWrite(7, HIGH);
+  delay(400);
+  digitalWrite(7, LOW);
+  delay(3000);
 }
